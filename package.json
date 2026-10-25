@@ -1,0 +1,15 @@
+{
+  "name": "calorie-tracker-scan-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tiny server that turns a food photo into a nutrition estimate using Google Gemini (for the Calorie Tracker app).",
+  "engines": { "node": ">=20.12" },
+  "scripts": {
+    "build": "esbuild server/index.ts --platform=node --bundle --format=esm --outfile=dist/server.mjs",
+    "start": "node dist/server.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

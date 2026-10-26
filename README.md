@@ -7,6 +7,7 @@ No database, no logins, no files stored. Photos are passed to Gemini and then di
 ## Endpoints
 - `GET /api/health` → `{ ok, configured, model }`
 - `POST /api/analyze-food` with JSON `{ "imageBase64": "...", "mimeType": "image/jpeg" }` (max 15 MB) → `{ success: true, data: { foods, totalCalories, description } }` or `{ success: false, error }`
+- `POST /api/crash-report` (needs the `x-app-token` header) with JSON `{ message, stack, componentStack?, appVersion, platform, osVersion, device?, isFatal, timestamp, screen? }` (max 20 KB, 20 reports per IP per hour). Each report is written to the logs as one line starting with `CRASH_REPORT` followed by JSON. Only these technical fields are kept — no food logs or weights. In Render: service → Logs → search `CRASH_REPORT`.
 
 ## Settings (environment variables — never commit them)
 | Name | Needed | What it is |

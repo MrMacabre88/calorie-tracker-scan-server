@@ -3,12 +3,19 @@
  *
  *   GET  /api/health        -> { ok, configured, model }
  *   POST /api/analyze-food  -> body { imageBase64, mimeType } -> AnalyzeFoodResponse
+ *   POST /api/crash-report  -> app error report, logged as one "CRASH_REPORT {json}" line
  *
  * Env: GEMINI_API_KEY (required), GEMINI_MODEL (optional), APP_TOKEN (optional shared
  * secret the app sends as "x-app-token"), PORT (default 3000).
  */
 import http from "node:http";
 import { analyzeFoodImage, DEFAULT_GEMINI_MODEL } from "./gemini";
+import {
+  CRASH_MAX_BODY_BYTES,
+  createRateLimiter,
+  formatCrashLogLine,
+  validateCrashReport,
+} from "./crash-report";
 
 try {
   process.loadEnvFile?.(); // load .env if present (Node 20.12+)
@@ -32,15 +39,27 @@ function send(res: http.ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req: http.IncomingMessage): Promise<string> {
+const allowCrashReport = createRateLimiter();
+
+function clientIp(req: http.IncomingMessage): string {
+  const fwd = req.headers["x-forwarded-for"];
+  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim();
+  return first || req.socket.remoteAddress || "unknown";
+}
+
+/** Reads the body. Small endpoints pass `drain` so a too-large body still gets a 413 reply. */
+function readBody(req: http.IncomingMessage, maxBytes = MAX_BODY_BYTES, drain = false): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let over = false;
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => {
+      if (over) return;
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
+        over = true;
         reject(new Error("too_large"));
-        req.destroy();
+        if (!drain) req.destroy();
         return;
       }
       chunks.push(chunk);
@@ -55,6 +74,25 @@ export const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") return send(res, 204, {});
   if (req.method === "GET" && path === "/api/health") {
     return send(res, 200, { ok: true, configured: Boolean(API_KEY), model: MODEL });
+  }
+  if (req.method === "POST" && path === "/api/crash-report") {
+    if (APP_TOKEN && req.headers["x-app-token"] !== APP_TOKEN) {
+      return send(res, 401, { success: false, error: "Unauthorized" });
+    }
+    if (!allowCrashReport(clientIp(req))) {
+      return send(res, 429, { success: false, error: "Too many reports." });
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(await readBody(req, CRASH_MAX_BODY_BYTES, true));
+    } catch (error) {
+      const tooLarge = (error as Error).message === "too_large";
+      return send(res, tooLarge ? 413 : 400, { success: false, error: tooLarge ? "Report too large." : "Invalid JSON." });
+    }
+    const checked = validateCrashReport(body);
+    if (!checked.ok) return send(res, 400, { success: false, error: checked.error });
+    console.log(formatCrashLogLine(checked.report));
+    return send(res, 200, { success: true });
   }
   if (req.method !== "POST" || path !== "/api/analyze-food") {
     return send(res, 404, { success: false, error: "Not found" });

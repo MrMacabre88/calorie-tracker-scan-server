@@ -4,11 +4,14 @@
   "private": true,
   "type": "module",
   "description": "Tiny server that turns a food photo into a nutrition estimate using Google Gemini (for the Calorie Tracker app).",
-  "engines": { "node": ">=20.12" },
+  "engines": {
+    "node": ">=20.12"
+  },
   "scripts": {
     "build": "esbuild server/index.ts --platform=node --bundle --format=esm --outfile=dist/server.mjs",
     "start": "node dist/server.mjs",
-    "test": "esbuild tests/*.test.ts --platform=node --bundle --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/"
+    "test": "esbuild tests/*.test.ts --platform=node --bundle --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/",
+    "legal:md": "esbuild scripts/legal-md.ts --platform=node --bundle --format=esm --log-level=warning --outfile=dist-test/legal-md.mjs && node dist-test/legal-md.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.12"

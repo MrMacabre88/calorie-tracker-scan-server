@@ -5,11 +5,13 @@
  *   POST /api/analyze-food  -> body { imageBase64, mimeType } -> AnalyzeFoodResponse
  *                              (rate limited per IP + global daily cap, see scan-limits.ts)
  *   POST /api/crash-report  -> app error report, logged as one "CRASH_REPORT {json}" line
+ *   GET  /privacy, /privacy-policy, /disclaimer, /terms -> public HTML legal pages (no token), see legal.ts
  *
  * Env: GEMINI_API_KEY (required), GEMINI_MODEL (optional), APP_TOKEN (optional shared
  * secret the app sends as "x-app-token"), PORT (default 3000), DAILY_SCAN_CAP (default 500),
  * SCAN_LIMIT_PER_IP_HOUR (default 30), SCAN_LIMIT_PER_IP_DAY (default 100),
- * SCAN_MAX_BODY_BYTES (default 8 MB), TRUST_PROXY_HOPS (default 1).
+ * SCAN_MAX_BODY_BYTES (default 8 MB), TRUST_PROXY_HOPS (default 1),
+ * PRIVACY_CONTACT_EMAIL (shown on the legal pages; default placeholder CONTACT_EMAIL_HERE).
  */
 import http from "node:http";
 import { analyzeFoodImage, DEFAULT_GEMINI_MODEL } from "./gemini";
@@ -28,6 +30,7 @@ import {
   retryAfterSeconds,
   type LimitReason,
 } from "./scan-limits";
+import { legalPageFor } from "./legal";
 
 try {
   process.loadEnvFile?.(); // load .env if present (Node 20.12+)
@@ -50,6 +53,17 @@ function send(res: http.ServerResponse, status: number, body: unknown, extraHead
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   });
   res.end(JSON.stringify(body));
+}
+
+function sendHtml(res: http.ServerResponse, html: string, headOnly: boolean) {
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "public, max-age=300",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+  });
+  res.end(headOnly ? undefined : html);
 }
 
 const allowCrashReport = createRateLimiter();
@@ -90,6 +104,10 @@ function readBody(req: http.IncomingMessage, maxBytes = MAX_BODY_BYTES, drain = 
 export const server = http.createServer(async (req, res) => {
   const path = (req.url ?? "/").split("?")[0];
   if (req.method === "OPTIONS") return send(res, 204, {});
+  if (req.method === "GET" || req.method === "HEAD") {
+    const page = legalPageFor(path);
+    if (page) return sendHtml(res, page, req.method === "HEAD");
+  }
   if (req.method === "GET" && path === "/api/health") {
     return send(res, 200, { ok: true, configured: Boolean(API_KEY), model: MODEL });
   }

@@ -3,10 +3,13 @@
  *
  *   GET  /api/health        -> { ok, configured, model }
  *   POST /api/analyze-food  -> body { imageBase64, mimeType } -> AnalyzeFoodResponse
+ *                              (rate limited per IP + global daily cap, see scan-limits.ts)
  *   POST /api/crash-report  -> app error report, logged as one "CRASH_REPORT {json}" line
  *
  * Env: GEMINI_API_KEY (required), GEMINI_MODEL (optional), APP_TOKEN (optional shared
- * secret the app sends as "x-app-token"), PORT (default 3000).
+ * secret the app sends as "x-app-token"), PORT (default 3000), DAILY_SCAN_CAP (default 500),
+ * SCAN_LIMIT_PER_IP_HOUR (default 30), SCAN_LIMIT_PER_IP_DAY (default 100),
+ * SCAN_MAX_BODY_BYTES (default 8 MB), TRUST_PROXY_HOPS (default 1).
  */
 import http from "node:http";
 import { analyzeFoodImage, DEFAULT_GEMINI_MODEL } from "./gemini";
@@ -16,6 +19,15 @@ import {
   formatCrashLogLine,
   validateCrashReport,
 } from "./crash-report";
+import {
+  clientIp,
+  createScanLimiter,
+  DEFAULT_SCAN_MAX_BODY_BYTES,
+  formatScanLimitLogLine,
+  LIMIT_MESSAGES,
+  retryAfterSeconds,
+  type LimitReason,
+} from "./scan-limits";
 
 try {
   process.loadEnvFile?.(); // load .env if present (Node 20.12+)
@@ -27,10 +39,11 @@ const PORT = Number(process.env.PORT) || 3000;
 const API_KEY = process.env.GEMINI_API_KEY ?? "";
 const MODEL = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
 const APP_TOKEN = process.env.APP_TOKEN ?? "";
-const MAX_BODY_BYTES = 15 * 1024 * 1024;
+const MAX_BODY_BYTES = Number(process.env.SCAN_MAX_BODY_BYTES) > 0 ? Number(process.env.SCAN_MAX_BODY_BYTES) : DEFAULT_SCAN_MAX_BODY_BYTES;
 
-function send(res: http.ServerResponse, status: number, body: unknown) {
+function send(res: http.ServerResponse, status: number, body: unknown, extraHeaders: Record<string, string> = {}) {
   res.writeHead(status, {
+    ...extraHeaders,
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, x-app-token",
@@ -40,11 +53,16 @@ function send(res: http.ServerResponse, status: number, body: unknown) {
 }
 
 const allowCrashReport = createRateLimiter();
+const scanLimiter = createScanLimiter();
 
-function clientIp(req: http.IncomingMessage): string {
-  const fwd = req.headers["x-forwarded-for"];
-  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim();
-  return first || req.socket.remoteAddress || "unknown";
+function sendLimited(res: http.ServerResponse, reason: LimitReason, ip: string) {
+  console.warn(formatScanLimitLogLine(reason, ip, scanLimiter.stats()));
+  return send(
+    res,
+    429,
+    { success: false, error: LIMIT_MESSAGES[reason], code: "rate_limited" },
+    { "Retry-After": String(retryAfterSeconds(reason)) }
+  );
 }
 
 /** Reads the body. Small endpoints pass `drain` so a too-large body still gets a 413 reply. */
@@ -103,33 +121,50 @@ export const server = http.createServer(async (req, res) => {
   if (!API_KEY) {
     return send(res, 500, { success: false, error: "Server is missing GEMINI_API_KEY." });
   }
+  const ip = clientIp(req);
+  // Cheap pre-check so a blocked client doesn't make us read a multi-MB body
+  const preBlocked = scanLimiter.check(ip);
+  if (preBlocked) {
+    req.resume();
+    return sendLimited(res, preBlocked, ip);
+  }
+  if (Number(req.headers["content-length"]) > MAX_BODY_BYTES) {
+    req.resume();
+    return send(res, 413, { success: false, error: "Photo is too large." }, { Connection: "close" });
+  }
 
   let input: { imageBase64?: unknown; mimeType?: unknown };
   try {
-    input = JSON.parse(await readBody(req));
+    input = JSON.parse(await readBody(req, MAX_BODY_BYTES, true));
   } catch (error) {
     const tooLarge = (error as Error).message === "too_large";
-    return send(res, tooLarge ? 413 : 400, {
-      success: false,
-      error: tooLarge ? "Photo is too large." : "Invalid request.",
-    });
+    if (tooLarge) {
+      // Reply 413, then drop the connection so the client can't keep streaming
+      res.on("finish", () => req.destroy());
+      return send(res, 413, { success: false, error: "Photo is too large." }, { Connection: "close" });
+    }
+    return send(res, 400, { success: false, error: "Invalid request." });
   }
   if (typeof input.imageBase64 !== "string" || input.imageBase64.length === 0) {
     return send(res, 400, { success: false, error: "Missing imageBase64." });
   }
+  const blocked = scanLimiter.consume(ip);
+  if (blocked) return sendLimited(res, blocked, ip);
 
   const result = await analyzeFoodImage(
     {
       imageBase64: input.imageBase64,
       mimeType: typeof input.mimeType === "string" ? input.mimeType : undefined,
     },
-    { apiKey: API_KEY, model: MODEL }
+    { apiKey: API_KEY, model: MODEL, beforeRetry: () => scanLimiter.consumeGlobalOnly() }
   );
   return send(res, 200, result);
 });
 
 if (process.env.NODE_ENV !== "test") {
   server.listen(PORT, () => {
+    const c = scanLimiter.config;
     console.log(`Calorie Tracker API listening on :${PORT} (model ${MODEL}${API_KEY ? "" : ", GEMINI_API_KEY NOT SET"})`);
+    console.log(`Scan limits: ${c.perIpHour}/hour and ${c.perIpDay}/day per IP, ${c.dailyCap} Gemini calls/day total (UTC), max body ${MAX_BODY_BYTES} bytes`);
   });
 }

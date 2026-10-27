@@ -12,6 +12,8 @@ export interface AnalyzeOptions {
   model?: string;
   attempts?: number;
   fetchImpl?: typeof fetch;
+  /** Called before each retry (attempt 2+). Return false to skip it (e.g. daily cap reached). */
+  beforeRetry?: () => boolean;
 }
 
 /** Text of the first candidate, ignoring any "thought" parts. */
@@ -30,7 +32,7 @@ export function geminiText(body: unknown): string {
  */
 export async function analyzeFoodImage(
   input: { imageBase64: string; mimeType?: string },
-  { apiKey, model = DEFAULT_GEMINI_MODEL, attempts = 2, fetchImpl = fetch }: AnalyzeOptions
+  { apiKey, model = DEFAULT_GEMINI_MODEL, attempts = 2, fetchImpl = fetch, beforeRetry }: AnalyzeOptions
 ): Promise<AnalyzeFoodResponse> {
   const data = input.imageBase64.replace(/^data:[^;]+;base64,/, "");
   const mimeType = input.mimeType?.startsWith("image/") ? input.mimeType : "image/jpeg";
@@ -51,6 +53,10 @@ export async function analyzeFoodImage(
   });
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1 && beforeRetry && !beforeRetry()) {
+      console.warn("[analyze-food] retry skipped: daily scan cap reached");
+      break;
+    }
     try {
       const res = await fetchImpl(url, {
         method: "POST",

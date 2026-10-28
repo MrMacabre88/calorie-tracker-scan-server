@@ -40,7 +40,7 @@ test("privacy policy covers the key disclosures", () => {
     "Human reviewers may read",
     "under 13",
     "Privacy Act 1988",
-    "27 October 2026",
+    "28 October 2026", "Share my progress", "nothing is sent to PortionSnap",
     "Send crash reports",
     '<span class="placeholder">CONTACT_EMAIL_HERE</span>',
   ]) {

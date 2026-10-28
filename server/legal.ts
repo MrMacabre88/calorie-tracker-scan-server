@@ -12,7 +12,7 @@
  */
 
 export const CONTACT_EMAIL_PLACEHOLDER = "CONTACT_EMAIL_HERE";
-export const EFFECTIVE_DATE = "27 October 2026";
+export const EFFECTIVE_DATE = "28 October 2026";
 export const PUBLIC_BASE_URL = "https://calorie-tracker-scan.onrender.com";
 
 export function contactEmail(env: Record<string, string | undefined> = process.env): string {
@@ -131,6 +131,9 @@ export const PRIVACY_POLICY: LegalDoc = {
     { h2: "8. Backups you make" },
     {
       p: "Backups are files **you** create: you choose a folder on your phone or share the file to an app you pick, such as Google Drive or email. I never receive them. Backup files contain your PortionSnap data in a readable format and **aren't encrypted**, so keep them somewhere you trust.",
+    },
+    {
+      p: "**Sharing your progress:** the \"Share my progress\" image is created on your phone. It only goes where you choose in Android's share sheet, and nothing is sent to PortionSnap or my server.",
     },
 
     { h2: "9. Children" },

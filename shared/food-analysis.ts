@@ -65,7 +65,8 @@ export function extractMessageText(content: unknown): string {
   return "";
 }
 
-function toNumber(value: unknown): number {
+/** Lenient number parse used for model output: "250 kcal" -> 250, negatives/NaN -> 0, 1 decimal. */
+export function toNumber(value: unknown): number {
   let n: number;
   if (typeof value === "number") n = value;
   else if (typeof value === "string") n = parseFloat(value.replace(/,/g, "").replace(/[^0-9.\-]+/g, " ").trim());
@@ -74,13 +75,13 @@ function toNumber(value: unknown): number {
   return Math.round(n * 10) / 10;
 }
 
-function toConfidence(value: unknown): Confidence {
+export function toConfidence(value: unknown): Confidence {
   const v = String(value ?? "").toLowerCase();
   return v === "high" || v === "low" ? v : "medium";
 }
 
 /** Find and parse the first JSON object in the model output (tolerates ```json fences / extra prose). */
-function parseJsonObject(text: string): Record<string, unknown> | null {
+export function parseJsonObject(text: string): Record<string, unknown> | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
   const candidates = [trimmed];

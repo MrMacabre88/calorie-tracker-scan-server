@@ -4,17 +4,21 @@
  *   GET  /api/health        -> { ok, configured, model }
  *   POST /api/analyze-food  -> body { imageBase64, mimeType } -> AnalyzeFoodResponse
  *                              (rate limited per IP + global daily cap, see scan-limits.ts)
+ *   POST /api/scan-menu     -> body { imageBase64, mimeType, mode: "auto"|"menu"|"recipe" } -> ScanMenuResponse
+ *                              (PortionSnap Pro; same per-IP limits + global cap as analyze-food)
+ *   POST /api/coach         -> body { question, history, summary } -> CoachResponse
+ *                              (PortionSnap Pro; COACH_LIMIT_PER_IP_DAY (default 20) + global cap)
  *   POST /api/crash-report  -> app error report, logged as one "CRASH_REPORT {json}" line
  *   GET  /privacy, /privacy-policy, /disclaimer, /terms -> public HTML legal pages (no token), see legal.ts
  *
  * Env: GEMINI_API_KEY (required), GEMINI_MODEL (optional), APP_TOKEN (optional shared
  * secret the app sends as "x-app-token"), PORT (default 3000), DAILY_SCAN_CAP (default 500),
  * SCAN_LIMIT_PER_IP_HOUR (default 30), SCAN_LIMIT_PER_IP_DAY (default 100),
- * SCAN_MAX_BODY_BYTES (default 8 MB), TRUST_PROXY_HOPS (default 1),
+ * SCAN_MAX_BODY_BYTES (default 8 MB), COACH_LIMIT_PER_IP_DAY (default 20), TRUST_PROXY_HOPS (default 1),
  * PRIVACY_CONTACT_EMAIL (shown on the legal pages; default placeholder CONTACT_EMAIL_HERE).
  */
 import http from "node:http";
-import { analyzeFoodImage, DEFAULT_GEMINI_MODEL } from "./gemini";
+import { analyzeFoodImage, analyzeMenuImage, askCoach, DEFAULT_GEMINI_MODEL } from "./gemini";
 import {
   CRASH_MAX_BODY_BYTES,
   createRateLimiter,
@@ -23,14 +27,20 @@ import {
 } from "./crash-report";
 import {
   clientIp,
+  coachPerIpDayFromEnv,
+  COACH_LIMIT_MESSAGES,
+  createCoachLimiter,
   createScanLimiter,
   DEFAULT_SCAN_MAX_BODY_BYTES,
   formatScanLimitLogLine,
   LIMIT_MESSAGES,
   retryAfterSeconds,
+  type CoachLimitReason,
   type LimitReason,
 } from "./scan-limits";
 import { legalPageFor } from "./legal";
+import { normalizeMenuMode } from "../shared/menu-analysis";
+import { COACH_MAX_BODY_BYTES, SAFETY_REPLY, needsSafetyReply, validateCoachRequest } from "../shared/coach";
 
 try {
   process.loadEnvFile?.(); // load .env if present (Node 20.12+)
@@ -68,6 +78,7 @@ function sendHtml(res: http.ServerResponse, html: string, headOnly: boolean) {
 
 const allowCrashReport = createRateLimiter();
 const scanLimiter = createScanLimiter();
+const coachLimiter = createCoachLimiter(coachPerIpDayFromEnv(), scanLimiter);
 
 function sendLimited(res: http.ServerResponse, reason: LimitReason, ip: string) {
   console.warn(formatScanLimitLogLine(reason, ip, scanLimiter.stats()));
@@ -76,6 +87,16 @@ function sendLimited(res: http.ServerResponse, reason: LimitReason, ip: string) 
     429,
     { success: false, error: LIMIT_MESSAGES[reason], code: "rate_limited" },
     { "Retry-After": String(retryAfterSeconds(reason)) }
+  );
+}
+
+function sendCoachLimited(res: http.ServerResponse, reason: CoachLimitReason, ip: string) {
+  console.warn(formatScanLimitLogLine(reason === "global_day" ? "global_day" : "ip_day", ip, scanLimiter.stats()).replace("SCAN_LIMIT", "COACH_LIMIT"));
+  return send(
+    res,
+    429,
+    { success: false, error: COACH_LIMIT_MESSAGES[reason], code: "rate_limited" },
+    { "Retry-After": String(retryAfterSeconds("ip_day")) }
   );
 }
 
@@ -130,7 +151,43 @@ export const server = http.createServer(async (req, res) => {
     console.log(formatCrashLogLine(checked.report));
     return send(res, 200, { success: true });
   }
-  if (req.method !== "POST" || path !== "/api/analyze-food") {
+  if (req.method === "POST" && path === "/api/coach") {
+    if (APP_TOKEN && req.headers["x-app-token"] !== APP_TOKEN) {
+      return send(res, 401, { success: false, error: "Unauthorized" });
+    }
+    if (!API_KEY) {
+      return send(res, 500, { success: false, error: "Server is missing GEMINI_API_KEY." });
+    }
+    const ip = clientIp(req);
+    const preBlocked = coachLimiter.check(ip);
+    if (preBlocked) {
+      req.resume();
+      return sendCoachLimited(res, preBlocked, ip);
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(await readBody(req, COACH_MAX_BODY_BYTES, true));
+    } catch (error) {
+      const tooLarge = (error as Error).message === "too_large";
+      return send(res, tooLarge ? 413 : 400, { success: false, error: tooLarge ? "Request too large." : "Invalid request." });
+    }
+    const checked = validateCoachRequest(body);
+    if (!checked.ok) return send(res, 400, { success: false, error: checked.error });
+    // Clear self-harm / purging requests get a fixed supportive reply; no model call.
+    if (needsSafetyReply(checked.request.question)) {
+      return send(res, 200, { success: true, reply: SAFETY_REPLY, safety: true });
+    }
+    const blocked = coachLimiter.consume(ip);
+    if (blocked) return sendCoachLimited(res, blocked, ip);
+    const result = await askCoach(checked.request, {
+      apiKey: API_KEY,
+      model: MODEL,
+      beforeRetry: () => scanLimiter.consumeGlobalOnly(),
+    });
+    return send(res, 200, result);
+  }
+  const isMenu = path === "/api/scan-menu";
+  if (req.method !== "POST" || (path !== "/api/analyze-food" && !isMenu)) {
     return send(res, 404, { success: false, error: "Not found" });
   }
   if (APP_TOKEN && req.headers["x-app-token"] !== APP_TOKEN) {
@@ -151,7 +208,7 @@ export const server = http.createServer(async (req, res) => {
     return send(res, 413, { success: false, error: "Photo is too large." }, { Connection: "close" });
   }
 
-  let input: { imageBase64?: unknown; mimeType?: unknown };
+  let input: { imageBase64?: unknown; mimeType?: unknown; mode?: unknown };
   try {
     input = JSON.parse(await readBody(req, MAX_BODY_BYTES, true));
   } catch (error) {
@@ -169,13 +226,14 @@ export const server = http.createServer(async (req, res) => {
   const blocked = scanLimiter.consume(ip);
   if (blocked) return sendLimited(res, blocked, ip);
 
-  const result = await analyzeFoodImage(
-    {
-      imageBase64: input.imageBase64,
-      mimeType: typeof input.mimeType === "string" ? input.mimeType : undefined,
-    },
-    { apiKey: API_KEY, model: MODEL, beforeRetry: () => scanLimiter.consumeGlobalOnly() }
-  );
+  const image = {
+    imageBase64: input.imageBase64,
+    mimeType: typeof input.mimeType === "string" ? input.mimeType : undefined,
+  };
+  const options = { apiKey: API_KEY, model: MODEL, beforeRetry: () => scanLimiter.consumeGlobalOnly() };
+  const result = isMenu
+    ? await analyzeMenuImage({ ...image, mode: normalizeMenuMode(input.mode) }, options)
+    : await analyzeFoodImage(image, options);
   return send(res, 200, result);
 });
 
@@ -183,6 +241,7 @@ if (process.env.NODE_ENV !== "test") {
   server.listen(PORT, () => {
     const c = scanLimiter.config;
     console.log(`Calorie Tracker API listening on :${PORT} (model ${MODEL}${API_KEY ? "" : ", GEMINI_API_KEY NOT SET"})`);
-    console.log(`Scan limits: ${c.perIpHour}/hour and ${c.perIpDay}/day per IP, ${c.dailyCap} Gemini calls/day total (UTC), max body ${MAX_BODY_BYTES} bytes`);
+    console.log(`Scan limits (photo + menu scans): ${c.perIpHour}/hour and ${c.perIpDay}/day per IP, ${c.dailyCap} Gemini calls/day total (UTC), max body ${MAX_BODY_BYTES} bytes`);
+    console.log(`Coach limit: ${coachLimiter.perIpDay} questions/day per IP (also counts toward the global cap)`);
   });
 }

@@ -42,6 +42,10 @@ test("privacy policy covers the key disclosures", () => {
     "Privacy Act 1988",
     "28 October 2026", "Share my progress", "nothing is sent to PortionSnap",
     "Send crash reports",
+    "AI coach (PortionSnap Pro)", "recipe scan (PortionSnap Pro)", "Health Connect (PortionSnap Pro)",
+    "never sent to my server, Google Gemini, the AI coach or anyone else",
+    "including the Limited Use requirements", "active calories burned", "Add exercise calories to my daily target",
+    "short summary of <strong>today only</strong>",
     '<span class="placeholder">CONTACT_EMAIL_HERE</span>',
   ]) {
     assert.ok(html.includes(needle), `missing: ${needle}`);

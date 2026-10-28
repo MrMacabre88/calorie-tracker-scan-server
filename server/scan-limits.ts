@@ -147,3 +147,52 @@ export function clientIp(req: http.IncomingMessage, trustedHops = intEnv("TRUST_
 export function formatScanLimitLogLine(reason: LimitReason, ip: string, stats: { globalCount: number; dailyCap: number }) {
   return `SCAN_LIMIT ${JSON.stringify({ at: new Date().toISOString(), reason, ip, globalCount: stats.globalCount, dailyCap: stats.dailyCap })}`;
 }
+
+// ---- AI coach (POST /api/coach) ----
+// Its own per-IP daily limit (COACH_LIMIT_PER_IP_DAY, default 20 questions per UTC day),
+// and every question also counts toward the shared global DAILY_SCAN_CAP (one Gemini call each).
+
+export const DEFAULT_COACH_PER_IP_DAY = 20;
+
+export type CoachLimitReason = "coach_ip_day" | "global_day";
+
+export const COACH_LIMIT_MESSAGES: Record<CoachLimitReason, string> = {
+  coach_ip_day: "You've asked the coach a lot of questions today. Please try again tomorrow.",
+  global_day: "The coach is very busy today and has hit its daily limit. Please try again tomorrow.",
+};
+
+export function coachPerIpDayFromEnv(): number {
+  return intEnv("COACH_LIMIT_PER_IP_DAY", DEFAULT_COACH_PER_IP_DAY);
+}
+
+interface GlobalCounter {
+  consumeGlobalOnly(now?: number): boolean;
+  stats(now?: number): { globalCount: number; dailyCap: number };
+}
+
+export function createCoachLimiter(perIpDay: number, global: GlobalCounter) {
+  const day = new Map<string, { day: string; count: number }>();
+
+  function check(ip: string, now = Date.now()): CoachLimitReason | null {
+    const s = global.stats(now);
+    if (s.globalCount >= s.dailyCap) return "global_day";
+    const d = day.get(ip);
+    if (d && d.day === utcDay(now) && d.count >= perIpDay) return "coach_ip_day";
+    return null;
+  }
+
+  /** Checks and, if allowed, counts one question for this IP and one call on the global cap. */
+  function consume(ip: string, now = Date.now()): CoachLimitReason | null {
+    const blocked = check(ip, now);
+    if (blocked) return blocked;
+    if (!global.consumeGlobalOnly(now)) return "global_day";
+    const today = utcDay(now);
+    if (day.size > 5000) for (const [k, v] of day) if (v.day !== today) day.delete(k);
+    const d = day.get(ip);
+    if (!d || d.day !== today) day.set(ip, { day: today, count: 1 });
+    else d.count += 1;
+    return null;
+  }
+
+  return { check, consume, perIpDay };
+}

@@ -13,6 +13,8 @@
 
 export const CONTACT_EMAIL_PLACEHOLDER = "CONTACT_EMAIL_HERE";
 export const EFFECTIVE_DATE = "28 October 2026";
+export const DEVELOPER_NAME = "Snappy Gecko Studios";
+export const COPYRIGHT_LINE = `© 2026 ${DEVELOPER_NAME}`;
 export const PUBLIC_BASE_URL = "https://calorie-tracker-scan.onrender.com";
 
 export function contactEmail(env: Record<string, string | undefined> = process.env): string {
@@ -41,7 +43,7 @@ export const PRIVACY_POLICY: LegalDoc = {
   subtitle: `Effective ${EFFECTIVE_DATE}`,
   blocks: [
     {
-      p: "PortionSnap is a calorie and nutrition tracker for Android, made by an individual developer in Australia (\"I\", \"me\"). This policy explains in plain English what information the app handles, where it goes and why. It describes what the app and its scan server actually do.",
+      p: "PortionSnap is a calorie and nutrition tracker for Android, made by Snappy Gecko Studios, the trading name of an individual developer based in Australia (\"I\", \"me\"). This policy explains in plain English what information the app handles, where it goes and why. It describes what the app and its scan server actually do.",
     },
     { h2: "The short version" },
     {
@@ -60,7 +62,7 @@ export const PRIVACY_POLICY: LegalDoc = {
 
     { h2: "1. Who is responsible" },
     {
-      p: "PortionSnap is developed and run by an individual based in Australia. You can contact me about privacy at {{EMAIL}}.",
+      p: "PortionSnap is developed and run by Snappy Gecko Studios, the trading name of an individual based in Australia. Snappy Gecko Studios isn't a registered company. You can contact me about privacy at {{EMAIL}}.",
     },
 
     { h2: "2. Information stored on your phone" },
@@ -285,6 +287,7 @@ export function renderMarkdown(doc: LegalDoc, email = contactEmail()): string {
       lines.push("");
     }
   }
+  lines.push("---", "", COPYRIGHT_LINE, "");
   return lines.join("\n").trimEnd() + "\n";
 }
 
@@ -342,7 +345,7 @@ export function renderHtml(doc: LegalDoc, page: "privacy" | "disclaimer", email 
 <main class="card">
 ${body}
 </main>
-<footer>PortionSnap · Made in Australia</footer>
+<footer>PortionSnap · Made in Australia<br>${escapeHtml(COPYRIGHT_LINE)}</footer>
 </div>
 </body>
 </html>`;

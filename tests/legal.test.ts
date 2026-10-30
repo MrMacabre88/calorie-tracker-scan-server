@@ -84,3 +84,15 @@ test("HTTP: legal pages are public HTML, unknown paths still JSON 404", async ()
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
+
+test("legal pages name Snappy Gecko Studios and show the copyright footer", () => {
+  for (const p of ["/privacy", "/disclaimer", "/terms"]) {
+    const html = legalPageFor(p, "x@y.z") ?? "";
+    assert.match(html, /<footer>[^<]*<br>© 2026 Snappy Gecko Studios<\/footer>/);
+  }
+  const privacy = legalPageFor("/privacy", "x@y.z") ?? "";
+  assert.match(privacy, /made by Snappy Gecko Studios, the trading name of an individual developer based in Australia/);
+  assert.match(privacy, /developed and run by Snappy Gecko Studios/);
+  assert.match(renderMarkdown(PRIVACY_POLICY, "x@y.z"), /© 2026 Snappy Gecko Studios\n$/);
+  assert.match(renderMarkdown(HEALTH_DISCLAIMER, "x@y.z"), /© 2026 Snappy Gecko Studios\n$/);
+});
